@@ -14,30 +14,33 @@ def show_ticket_system():
     st.title("🎫 Ticketsystem")
 
     # Tabs für verschiedene Funktionen
-    ticket_tabs = st.tabs(["📋 Ticketübersicht", "✏️ Ticket bearbeiten", "➕ Neues Ticket", "📊 Statistiken", "⚙️ Einstellungen", "📧 EMAIL"])
+    ticket_tabs = st.tabs(["📋 Ticketübersicht", "📌 Kanban-Board", "✏️ Ticket bearbeiten", "➕ Neues Ticket", "📊 Statistiken", "⚙️ Einstellungen", "📧 EMAIL"])
 
     # Tab: Ticketübersicht
     with ticket_tabs[0]:
         show_ticket_overview()
 
-    # Tab: Ticket bearbeiten (NEU)
     with ticket_tabs[1]:
+        show_kanban_board()
+
+    # Tab: Ticket bearbeiten (NEU)
+    with ticket_tabs[2]:
         show_ticket_edit_tab()
 
     # Tab: Neues Ticket
-    with ticket_tabs[2]:
+    with ticket_tabs[3]:
         show_new_ticket_form()
 
     # Tab: Statistiken
-    with ticket_tabs[3]:
+    with ticket_tabs[4]:
         show_ticket_statistics()
 
     # Tab: Einstellungen
-    with ticket_tabs[4]:
+    with ticket_tabs[5]:
         show_settings()
 
     # Tab: EMAIL
-    with ticket_tabs[5]:
+    with ticket_tabs[6]:
         st.subheader("📧 E-Mail")
 
         email_mode = st.radio("E-Mail-Funktion wählen:", ["📧 E-Mail senden", "📥 E-Mail empfangen"])
@@ -46,6 +49,7 @@ def show_ticket_system():
             show_email_tab()
         elif email_mode == "📥 E-Mail empfangen":
             show_email_inbox_tab()
+
 
 # Ticketübersicht anzeigen
 def show_ticket_overview():
@@ -180,7 +184,11 @@ def show_ticket_overview():
 def show_ticket_edit_tab():
     from Ticket import log_ticket_change
     from Main import engine
+
+
     st.subheader("✏️ Ticket bearbeiten")
+
+
 
     # Alle Tickets laden für die Auswahl
     try:
@@ -1059,5 +1067,76 @@ def show_settings():
                         st.rerun()
                     except Exception as e:
                         st.error(f"Fehler beim Hinzufügen des Status: {str(e)}")
+
+def show_kanban_board():
+    from Main import engine
+    st.subheader("📌 Kanban-Board")
+
+    # Status laden
+    status_df = pd.read_sql("SELECT ID_Status, Name FROM status ORDER BY ID_Status", con=engine)
+    status_list = status_df.to_dict('records')
+
+    # Tickets nach Status abrufen
+    query = """
+    SELECT t.ID_Ticket, t.Titel, t.Priorität, s.Name AS Status
+    FROM ticket t
+    LEFT JOIN status s ON t.ID_Status = s.ID_Status
+    ORDER BY t.ID_Status, t.Erstellt_am DESC
+    """
+    tickets_df = pd.read_sql(query, con=engine)
+
+    # Leeres Board, falls keine Tickets
+    if tickets_df.empty:
+        st.info("Keine Tickets vorhanden.")
+        return
+
+    # Board-Spalten
+    columns = st.columns(len(status_list))
+
+    for col, status in zip(columns, status_list):
+        with col:
+            st.markdown(f"### {status['Name']}")
+            filtered = tickets_df[tickets_df["Status"] == status["Name"]]
+
+            for _, ticket in filtered.iterrows():
+                st.markdown(f"""
+                **#{ticket['ID_Ticket']}**  
+                📝 {ticket['Titel']}  
+                🔺 Priorität: *{ticket['Priorität']}*
+                """)
+
+                with st.form(key=f"move_ticket_{ticket['ID_Ticket']}"):
+                    new_status = st.selectbox(
+                        "Verschieben nach:",
+                        [s["Name"] for s in status_list if s["Name"] != ticket["Status"]],
+                        key=f"status_select_{ticket['ID_Ticket']}"
+                    )
+                    move = st.form_submit_button("Verschieben")
+                    if move:
+                        try:
+                            new_status_id = next(
+                                s["ID_Status"] for s in status_list if s["Name"] == new_status
+                            )
+
+                            # Update in DB
+                            with engine.begin() as conn:
+                                conn.execute(text("""
+                                    UPDATE ticket
+                                    SET ID_Status = :status_id, Geändert_am = NOW()
+                                    WHERE ID_Ticket = :ticket_id
+                                """), {
+                                    "status_id": new_status_id,
+                                    "ticket_id": ticket["ID_Ticket"]
+                                })
+
+
+
+                            st.success(f"Ticket #{ticket['ID_Ticket']} verschoben nach '{new_status}'")
+                            st.rerun()
+
+                        except Exception as e:
+                            st.error(f"Fehler beim Verschieben des Tickets: {str(e)}")
+
+                st.markdown("---")
 
 

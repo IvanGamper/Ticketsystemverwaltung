@@ -185,8 +185,10 @@ def show_main_application():
     with st.sidebar:
 
         st.write(f"Angemeldet als: **{st.session_state.username}**")
+        st.write(f"Rolle: **{st.session_state.user_role}**")
 
-        # Abmelden-Button
+
+    # Abmelden-Button
         if st.button("Abmelden"):
             # Session-State zurücksetzen
             for key in list(st.session_state.keys()):
