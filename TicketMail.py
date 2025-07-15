@@ -7,9 +7,7 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
 def fetch_emails(email, password, imap_server="imap.gmail.com"):
-    """
-    Holt die letzten 5 E-Mails aus dem Posteingang
-    """
+
     try:
         with MailBox(imap_server).login(email, password, initial_folder="INBOX") as mailbox:
             messages = mailbox.fetch(limit=10, reverse=True)
@@ -27,9 +25,7 @@ def fetch_emails(email, password, imap_server="imap.gmail.com"):
 
 # E-Mail-Funktionen
 def send_email(smtp_server, smtp_port, email, app_password, to_email, subject, body, use_ssl=True):
-    """
-    Sendet eine E-Mail über SMTP
-    """
+
     try:
         # E-Mail-Nachricht erstellen
         msg = MIMEMultipart()
@@ -65,9 +61,7 @@ def show_email_tab():
     from Main import engine
     from Ticket import log_ticket_change
 
-    """
-    Zeigt das EMAIL-Tab mit E-Mail-Versendungsfunktionalität an
-    """
+
     st.subheader("📧 E-Mail versenden")
 
     # E-Mail-Konfiguration
@@ -232,6 +226,11 @@ Ihr Support-Team"""
 def show_email_inbox_tab():
     st.subheader("📥 E-Mail empfangen")
 
+    # Session-State Initialisierung für user_id (z. B. aus Login übernehmen)
+    if "user_id" not in st.session_state or not st.session_state["user_id"]:
+        st.warning("Benutzer nicht angemeldet. Bitte zuerst einloggen.")
+        return  # Bricht den Tab ab, falls keine gültige user_id vorhanden ist
+
     col1, col2 = st.columns(2)
     with col1:
         email = st.text_input("E-Mail-Adresse (IMAP-fähig)")
@@ -253,3 +252,100 @@ def show_email_inbox_tab():
                     st.markdown(f"**Von:** {mail['Von']}")
                     st.markdown("---")
                     st.text(mail['Nachricht'])
+
+        st.markdown("---")
+
+        # Button: E-Mails direkt in Tickets umwandeln
+    if st.button("📥 E-Mails in Tickets umwandeln"):
+        user_id = st.session_state.get("user_id")
+        if not email or not password:
+            st.error("Bitte E-Mail-Adresse und Passwort eingeben.")
+        else:
+            with st.spinner("E-Mails werden abgerufen und in Tickets umgewandelt..."):
+                success, result = fetch_and_create_tickets(email=email,
+                                                           password=password,
+                                                           imap_server=imap_server,
+                                                           user_id=user_id)
+
+            if success:
+                st.success(result)
+            else:
+                st.error(result)
+
+def create_ticket_from_email(email_data, user_id=1):
+    from Main import engine
+
+    try:
+        title = email_data["Betreff"][:100]  # max. 100 Zeichen
+        description = email_data["Nachricht"]
+        customer_email = email_data["Von"]
+
+        with engine.begin() as conn:
+            # 1. Kunde suchen
+            result = conn.execute(
+                text("SELECT ID_Kunde FROM kunde WHERE Email = :email LIMIT 1"),
+                {"email": customer_email}
+            )
+            row = result.fetchone()
+
+            # 2. Falls Kunde nicht existiert → automatisch anlegen
+            if not row:
+                insert_customer_query = text("""
+                    INSERT INTO kunde (Name, Email)
+                    VALUES (:name, :email)
+                """)
+                conn.execute(insert_customer_query, {
+                    "name": "Unbekannt",  # Oder z. B. aus dem Absendernamen extrahieren
+                    "email": customer_email
+                })
+
+                # Nach dem Einfügen ID holen
+                result = conn.execute(
+                    text("SELECT ID_Kunde FROM kunde WHERE Email = :email LIMIT 1"),
+                    {"email": customer_email}
+                )
+                row = result.fetchone()
+
+            kunde_id = row[0]
+
+            # 3. Ticket einfügen
+            insert_ticket_query = text("""
+                INSERT INTO ticket (Titel, Beschreibung, Erstellt_am, ID_Kunde)
+                VALUES (:title, :description, CURRENT_TIMESTAMP, :kunde_id)
+            """)
+            conn.execute(insert_ticket_query, {
+                "title": title,
+                "description": description,
+                "kunde_id": kunde_id
+            })
+
+        return True, f"✅ Ticket aus E-Mail von {customer_email} erstellt (Kunde vorhanden oder neu angelegt)."
+
+    except Exception as e:
+        return False, f"Fehler beim Erstellen des Tickets: {str(e)}"
+
+
+def fetch_and_create_tickets(email, password, user_id, imap_server="imap.gmail.com"):
+
+
+    """
+    Holt E-Mails und wandelt sie in Tickets um.
+    """
+    emails = fetch_emails(email, password, imap_server)
+    if isinstance(emails, str):  # Fehler
+        return False, emails
+
+    created = 0
+    failed = 0
+    messages = []
+
+    for email_data in emails:
+        success, msg = create_ticket_from_email(email_data, user_id=user_id)
+        messages.append(msg)
+        if success:
+            created += 1
+        else:
+            failed += 1
+
+    summary = f"{created} Tickets erstellt, {failed} fehlgeschlagen."
+    return True, summary + "\n\n" + "\n".join(messages)

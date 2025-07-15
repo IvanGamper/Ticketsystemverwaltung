@@ -4,7 +4,6 @@ import pandas as pd
 from sqlalchemy import text
 from Authorisation import (generate_salt, hash_password)
 
-
 #Ticketsystem anzeigen
 def show_ticket_system():
 
@@ -49,7 +48,6 @@ def show_ticket_system():
             show_email_tab()
         elif email_mode == "📥 E-Mail empfangen":
             show_email_inbox_tab()
-
 
 # Ticketübersicht anzeigen
 def show_ticket_overview():
