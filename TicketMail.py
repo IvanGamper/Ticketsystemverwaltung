@@ -7,6 +7,9 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime
 
+# Assuming 'engine' is imported from 'Main.py' or defined globally in the main application
+# from Main import engine
+# For standalone execution, you might need to define a dummy engine or connect to a test DB
 
 # Standardmitarbeiter (da keine Liste vorhanden ist)
 DEFAULT_EMPLOYEES = [
@@ -25,12 +28,46 @@ def initialize_session_state():
     """
     Initialisiert alle Session State Variablen für die Anwendung.
     """
-    from Main import engine  # falls nicht bereits importiert
+    # Consolidate session state initialization
+    defaults = {
+        "employees": DEFAULT_EMPLOYEES.copy(), # Fallback, will be overwritten by DB if successful
+        "email_config": {
+            "email": "kolobok1329@googlemail.com",
+            "password": "dqrmtejgeuxmzqtn",
+            "imap_server": "imap.gmail.com",
+            "email_limit": 10
+        },
+        "smtp_config": {
+            "smtp_server": "smtp.gmail.com",
+            "smtp_port": 587,
+            "use_ssl": True,
+            "sender_email": "",
+            "app_password": ""
+        },
+        "ticket_filters": {
+            "status_filter": TICKET_STATUS.copy(),
+            "priority_filter": TICKET_PRIORITIES.copy(),
+            "employee_filter": []
+        },
+        "fetched_emails": [],
+        "selected_emails_for_conversion": [],
+        "selected_employee_for_assignment": None,
+        "selected_ticket_for_email": None,
+        "email_content": {
+            "recipient_email": "",
+            "email_subject": "",
+            "email_body": ""
+        }
+    }
 
-    from Main import engine
+    for key, value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
 
-    if "employees" not in st.session_state:
+    # Load employees from DB if not already loaded or if it's still the default fallback
+    if st.session_state.employees == DEFAULT_EMPLOYEES:
         try:
+            from Main import engine # Import engine here to avoid circular dependency if Main imports this file
             with engine.connect() as conn:
                 st.info("✅ Verbindung zur Datenbank erfolgreich.")
                 result = conn.execute(text("SELECT ID_Mitarbeiter AS id, Name AS name, Email AS email FROM mitarbeiter"))
@@ -44,59 +81,16 @@ def initialize_session_state():
             st.error(f"❌ Fehler beim Laden der Mitarbeiter: {e}")
             import traceback
             st.text(traceback.format_exc())
-            st.session_state.employees = DEFAULT_EMPLOYEES.copy()
-    # Fallback
+            # Keep default employees if DB load fails
 
-    # E-Mail-Konfiguration
-    if "email_config" not in st.session_state:
-        st.session_state.email_config = {
-            "email": "kolobok1329@googlemail.com",
-            "password": "dqrmtejgeuxmzqtn",
-            "imap_server": "imap.gmail.com",
-            "email_limit": 10
-        }
 
-    # SMTP-Konfiguration
-    if "smtp_config" not in st.session_state:
-        st.session_state.smtp_config = {
-            "smtp_server": "smtp.gmail.com",
-            "smtp_port": 587,
-            "use_ssl": True,
-            "sender_email": "",
-            "app_password": ""
-        }
-
-    # Ticket-Filter
-    if "ticket_filters" not in st.session_state:
-        st.session_state.ticket_filters = {
-            "status_filter": TICKET_STATUS.copy(),
-            "priority_filter": TICKET_PRIORITIES.copy(),
-            "employee_filter": []
-        }
-
-    # E-Mail-Daten
-    if "fetched_emails" not in st.session_state:
-        st.session_state.fetched_emails = []
-
-    # Ausgewählte E-Mails für Konvertierung
-    if "selected_emails_for_conversion" not in st.session_state:
-        st.session_state.selected_emails_for_conversion = []
-
-    # Ausgewählter Mitarbeiter für E-Mail-Zuweisung
-    if "selected_employee_for_assignment" not in st.session_state:
-        st.session_state.selected_employee_for_assignment = None
-
-    # Ausgewähltes Ticket für E-Mail-Kontext
-    if "selected_ticket_for_email" not in st.session_state:
-        st.session_state.selected_ticket_for_email = None
-
-    # E-Mail-Inhalt
-    if "email_content" not in st.session_state:
-        st.session_state.email_content = {
-            "recipient_email": "",
-            "email_subject": "",
-            "email_body": ""
-        }
+@st.cache_resource
+def get_database_engine():
+    """
+    Caches the database engine to prevent re-creation on every rerun.
+    """
+    from Main import engine
+    return engine
 
 
 def fetch_emails(email, password, imap_server="imap.gmail.com", limit=10):
@@ -117,7 +111,8 @@ def fetch_emails(email, password, imap_server="imap.gmail.com", limit=10):
                 })
             return emails
     except Exception as e:
-        return f"Fehler beim Abrufen der E-Mails: {str(e)}"
+        st.error(f"Fehler beim Abrufen der E-Mails: {str(e)}")
+        return [] # Return empty list on error for consistent type
 
 
 def send_email(smtp_server, smtp_port, email, app_password, to_email, subject, body, use_ssl=True):
@@ -125,28 +120,22 @@ def send_email(smtp_server, smtp_port, email, app_password, to_email, subject, b
     Sendet eine E-Mail über SMTP.
     """
     try:
-        # E-Mail-Nachricht erstellen
         msg = MIMEMultipart()
-        msg['From'] = email
-        msg['To'] = to_email
-        msg['Subject'] = subject
+        msg["From"] = email
+        msg["To"] = to_email
+        msg["Subject"] = subject
 
-        # Text zur E-Mail hinzufügen
-        msg.attach(MIMEText(body, 'plain', 'utf-8'))
+        msg.attach(MIMEText(body, "plain", "utf-8"))
 
-        # SMTP-Verbindung aufbauen
+        server = None
         if use_ssl:
             server = smtplib.SMTP(smtp_server, smtp_port)
-            server.starttls()  # TLS aktivieren
+            server.starttls()
         else:
             server = smtplib.SMTP(smtp_server, smtp_port)
 
-        # Anmelden
         server.login(email, app_password)
-
-        # E-Mail senden
-        text = msg.as_string()
-        server.sendmail(email, to_email, text)
+        server.sendmail(email, to_email, msg.as_string())
         server.quit()
 
         return True, "E-Mail erfolgreich gesendet!"
@@ -159,7 +148,7 @@ def create_ticket_from_email(email_data, user_id=1, assigned_employee_id=None, p
     """
     Erstellt ein Ticket aus einer E-Mail mit Mitarbeiterzuweisung.
     """
-    from Main import engine
+    engine = get_database_engine()
 
     try:
         title = email_data["Betreff"][:100]
@@ -167,32 +156,33 @@ def create_ticket_from_email(email_data, user_id=1, assigned_employee_id=None, p
         customer_email = email_data["Von"]
 
         with engine.begin() as conn:
-            # Prüfen, ob Kunde bereits existiert
+            # Check if customer exists and get ID, or insert new customer
             result = conn.execute(
-                text("SELECT ID_Kunde FROM kunde WHERE Email = :email LIMIT 1"),
+                text("SELECT ID_Kunde FROM kunde WHERE Email = :email"),
                 {"email": customer_email}
             )
             row = result.fetchone()
 
-            if not row:
-                # Neuen Kunden erstellen
+            kunde_id = None
+            if row:
+                kunde_id = row[0]
+            else:
+                # Insert new customer and get their ID
                 conn.execute(text("""
                     INSERT INTO kunde (Name, Email)
                     VALUES (:name, :email)
                 """), {
-                    "name": customer_email.split('@')[0],  # Name aus E-Mail ableiten
+                    "name": customer_email.split("@")[0],  # Derive name from email
                     "email": customer_email
                 })
-
+                # Fetch the newly created customer's ID
                 result = conn.execute(
-                    text("SELECT ID_Kunde FROM kunde WHERE Email = :email LIMIT 1"),
+                    text("SELECT ID_Kunde FROM kunde WHERE Email = :email"),
                     {"email": customer_email}
                 )
-                row = result.fetchone()
+                kunde_id = result.fetchone()[0]
 
-            kunde_id = row[0]
-
-            # Ticket mit erweiterten Feldern erstellen
+            # Create ticket with extended fields
             conn.execute(text("""
                 INSERT INTO ticket (Titel, Beschreibung, Erstellt_am, ID_Kunde, ID_Status, Priorität, ID_Mitarbeiter)
                 VALUES (:title, :description, CURRENT_TIMESTAMP, :kunde_id, :id_status, :priority, :assigned_to)
@@ -205,7 +195,6 @@ def create_ticket_from_email(email_data, user_id=1, assigned_employee_id=None, p
                 "assigned_to": assigned_employee_id
             })
 
-        # Mitarbeitername für Rückmeldung
         employee_name = "Nicht zugewiesen"
         if assigned_employee_id:
             employee = next((emp for emp in st.session_state.employees if emp["id"] == assigned_employee_id), None)
@@ -215,6 +204,9 @@ def create_ticket_from_email(email_data, user_id=1, assigned_employee_id=None, p
         return True, f"✅ Ticket aus E-Mail von {customer_email} erstellt und an {employee_name} zugewiesen."
 
     except Exception as e:
+        st.error(f"Fehler beim Erstellen des Tickets: {str(e)}")
+        import traceback
+        st.text(traceback.format_exc())
         return False, f"Fehler beim Erstellen des Tickets: {str(e)}"
 
 
@@ -224,14 +216,12 @@ def show_email_inbox_tab():
     """
     st.subheader("📥 E-Mail empfangen")
 
-    # Session-State Initialisierung
     initialize_session_state()
 
     if "user_id" not in st.session_state or not st.session_state["user_id"]:
         st.warning("Benutzer nicht angemeldet. Bitte zuerst einloggen.")
         return
 
-    # E-Mail-Konfiguration
     st.markdown("### E-Mail-Konfiguration")
     col1, col2 = st.columns(2)
 
@@ -263,7 +253,6 @@ def show_email_inbox_tab():
             key="email_limit_input"
         )
 
-    # E-Mail-Konfiguration in Session State speichern
     st.session_state.email_config.update({
         "email": email,
         "password": password,
@@ -271,7 +260,6 @@ def show_email_inbox_tab():
         "email_limit": email_limit
     })
 
-    # E-Mails abrufen
     if st.button("📬 E-Mails abrufen"):
         if not email or not password:
             st.error("Bitte E-Mail-Adresse und Passwort eingeben.")
@@ -279,27 +267,19 @@ def show_email_inbox_tab():
             with st.spinner("E-Mails werden abgerufen..."):
                 emails = fetch_emails(email, password, imap_server, limit=email_limit)
 
-            if isinstance(emails, str):  # Fehlertext
-                st.error(emails)
+            if not emails:
+                st.info("Keine E-Mails gefunden oder Fehler beim Abrufen.")
             else:
-                if not emails:
-                    st.info("Keine E-Mails gefunden.")
-                else:
-                    # E-Mails in Session State speichern für interaktive Tabelle
-                    st.session_state.fetched_emails = emails
-                    st.success(f"{len(emails)} E-Mails erfolgreich abgerufen!")
+                st.session_state.fetched_emails = emails
+                st.success(f"{len(emails)} E-Mails erfolgreich abgerufen!")
 
-    # Interaktive E-Mail-Tabelle anzeigen
     if st.session_state.fetched_emails:
         st.markdown("---")
         st.markdown("### 📧 Abgerufene E-Mails")
 
         emails_df = pd.DataFrame(st.session_state.fetched_emails)
-
-        # Checkbox-Spalte für Auswahl hinzufügen
         emails_df.insert(0, "Auswählen", False)
 
-        # Interaktive Tabelle mit Auswahl
         selected_emails = st.data_editor(
             emails_df,
             use_container_width=True,
@@ -315,27 +295,26 @@ def show_email_inbox_tab():
             key="email_table"
         )
 
-        # Ausgewählte E-Mails in Session State speichern
-        st.session_state.selected_emails_for_conversion = selected_emails[selected_emails["Auswählen"] == True].drop(columns=["Auswählen"]).to_dict('records')
+        st.session_state.selected_emails_for_conversion = selected_emails[selected_emails["Auswählen"] == True].drop(columns=["Auswählen"]).to_dict("records")
 
-        # Ausgewählte E-Mails in Tickets umwandeln
         st.markdown("---")
         st.markdown("### 🎫 E-Mails in Tickets umwandeln")
 
         col1, col2 = st.columns(2)
 
         with col1:
-            # Mitarbeiterauswahl
-            employee_options = ["Nicht zuweisen"] + [f"{emp['name']} ({emp['email']})" for emp in st.session_state.employees]
+            employee_options = ["Nicht zuweisen"] + [f"{emp["name"]} ({emp["email"]})" for emp in st.session_state.employees]
             selected_employee_option = st.selectbox(
                 "Mitarbeiter zuweisen:",
                 options=employee_options,
-                index=0 if st.session_state.selected_employee_for_assignment is None else employee_options.index(st.session_state.selected_employee_for_assignment) if st.session_state.selected_employee_for_assignment in employee_options else 0,
+                index=0 if st.session_state.selected_employee_for_assignment is None else (
+                    employee_options.index(st.session_state.selected_employee_for_assignment)
+                    if st.session_state.selected_employee_for_assignment in employee_options else 0
+                ),
                 help="Wählen Sie einen Mitarbeiter aus, dem die neuen Tickets zugewiesen werden sollen.",
                 key="employee_assignment_select"
             )
 
-                        # Priorität auswählen (z. B. in show_email_inbox_tab())
             priorities = ["niedrig", "mittel", "hoch"]
             selected_priority = st.selectbox(
                 "Priorität für neue Tickets:",
@@ -344,8 +323,6 @@ def show_email_inbox_tab():
                 key="ticket_priority_select"
             )
 
-
-# Mitarbeiter-ID ermitteln und in Session State speichern
             assigned_employee_id = None
             if selected_employee_option != "Nicht zuweisen":
                 employee_name = selected_employee_option.split(" (")[0]
@@ -356,25 +333,19 @@ def show_email_inbox_tab():
             st.session_state.selected_employee_for_assignment = selected_employee_option
             st.session_state.selected_ticket_priority = selected_priority
 
-
         with col2:
-            # Alle E-Mails auswählen/abwählen
             if st.button("🔄 Alle E-Mails auswählen"):
-                # Alle E-Mails als ausgewählt markieren
-                for i in range(len(emails_df)):
-                    emails_df.loc[i, "Auswählen"] = True
+                emails_df.loc[:, "Auswählen"] = True
+                st.session_state.fetched_emails = emails_df.drop(columns=["Auswählen"]).to_dict("records")
                 st.rerun()
 
             if st.button("❌ Auswahl aufheben"):
-                # Alle E-Mails als nicht ausgewählt markieren
-                for i in range(len(emails_df)):
-                    emails_df.loc[i, "Auswählen"] = False
+                emails_df.loc[:, "Auswählen"] = False
+                st.session_state.fetched_emails = emails_df.drop(columns=["Auswählen"]).to_dict("records")
                 st.rerun()
 
-        # Tickets erstellen
         if st.button("🎫 Ausgewählte E-Mails in Tickets umwandeln", type="primary"):
             user_id = st.session_state.get("user_id")
-
             emails_to_convert = st.session_state.selected_emails_for_conversion
 
             if not emails_to_convert:
@@ -407,13 +378,11 @@ def show_email_inbox_tab():
                 progress_bar.empty()
                 status_text.empty()
 
-                # Ergebnis anzeigen
                 if created > 0:
                     st.success(f"✅ {created} Tickets erfolgreich erstellt!")
                 if failed > 0:
                     st.error(f"❌ {failed} Tickets konnten nicht erstellt werden.")
 
-                # Detaillierte Nachrichten in Expander
                 with st.expander("📋 Detaillierte Ergebnisse"):
                     for msg in messages:
                         if "✅" in msg:
@@ -421,7 +390,6 @@ def show_email_inbox_tab():
                         else:
                             st.error(msg)
 
-        # E-Mail-Details anzeigen
         st.markdown("---")
         st.markdown("### 📄 E-Mail-Details")
 
@@ -429,7 +397,7 @@ def show_email_inbox_tab():
             selected_index = st.selectbox(
                 "E-Mail zur Detailansicht auswählen:",
                 options=range(len(emails_df)),
-                format_func=lambda x: f"{emails_df.iloc[x]['Betreff']} ({emails_df.iloc[x]['Von']})",
+                format_func=lambda x: f"{emails_df.iloc[x]["Betreff"]} ({emails_df.iloc[x]["Von"]})",
                 key="email_detail_select"
             )
 
@@ -437,60 +405,60 @@ def show_email_inbox_tab():
                 selected_email = emails_df.iloc[selected_index]
 
                 with st.expander("📧 E-Mail-Inhalt", expanded=True):
-                    st.markdown(f"**Von:** {selected_email['Von']}")
-                    st.markdown(f"**Betreff:** {selected_email['Betreff']}")
-                    st.markdown(f"**Datum:** {selected_email['Datum']}")
+                    st.markdown(f"**Von:** {selected_email["Von"]}")
+                    st.markdown(f"**Betreff:** {selected_email["Betreff"]}")
+                    st.markdown(f"**Datum:** {selected_email["Datum"]}")
                     st.markdown("**Nachricht:**")
-                    st.text_area("", value=selected_email['Nachricht'], height=200, disabled=True, key="email_content_display")
+                    st.text_area("", value=selected_email["Nachricht"], height=200, disabled=True, key="email_content_display")
+
+
+@st.cache_data(ttl=600) # Cache for 10 minutes
+def get_tickets_df():
+    engine = get_database_engine()
+    ticket_query = """
+    SELECT 
+        t.ID_Ticket,
+        t.Titel,
+        t.Beschreibung,
+        t.Status,
+        t.Prioritaet,
+        t.Erstellt_am,
+        k.Name as Kunde,
+        k.Email as Kunde_Email,
+        CASE 
+            WHEN t.Zugewiesen_an IS NOT NULL THEN 
+                (SELECT Name FROM mitarbeiter WHERE ID_Mitarbeiter = t.Zugewiesen_an)
+            ELSE 'Nicht zugewiesen'
+        END as Zugewiesen_an
+    FROM ticket t
+    LEFT JOIN kunde k ON t.ID_Kunde = k.ID_Kunde
+    ORDER BY t.ID_Ticket DESC
+    """
+    with engine.connect() as conn:
+        result = conn.execute(text(ticket_query))
+        tickets_df = pd.DataFrame(result.fetchall(), columns=result.keys())
+    return tickets_df
 
 
 def show_ticket_management():
     """
     Erweiterte Ticketverwaltung mit Status und Prioritäten.
     """
-    from Main import engine
-
     st.subheader("🎫 Ticket-Verwaltung")
 
-    # Session-State Initialisierung
     initialize_session_state()
 
     try:
-        # Tickets mit erweiterten Informationen laden
-        ticket_query = """
-        SELECT 
-            t.ID_Ticket,
-            t.Titel,
-            t.Beschreibung,
-            t.Status,
-            t.Prioritaet,
-            t.Erstellt_am,
-            k.Name as Kunde,
-            k.Email as Kunde_Email,
-            CASE 
-                WHEN t.Zugewiesen_an IS NOT NULL THEN 
-                    (SELECT Name FROM mitarbeiter WHERE ID_Mitarbeiter = t.Zugewiesen_an)
-                ELSE 'Nicht zugewiesen'
-            END as Zugewiesen_an
-        FROM ticket t
-        LEFT JOIN kunde k ON t.ID_Kunde = k.ID_Kunde
-        ORDER BY t.ID_Ticket DESC
-        """
-
-        with engine.connect() as conn:
-            result = conn.execute(text(ticket_query))
-            tickets_df = pd.DataFrame(result.fetchall(), columns=result.keys())
+        tickets_df = get_tickets_df()
 
         if tickets_df.empty:
             st.info("Keine Tickets vorhanden.")
             return
 
-        # Mitarbeiter-Filter aktualisieren basierend auf verfügbaren Daten
-        employee_names = tickets_df['Zugewiesen_an'].unique().tolist()
+        employee_names = tickets_df["Zugewiesen_an"].unique().tolist()
         if not st.session_state.ticket_filters["employee_filter"]:
             st.session_state.ticket_filters["employee_filter"] = employee_names
 
-        # Filter-Optionen
         st.markdown("### 🔍 Filter")
         col1, col2, col3 = st.columns(3)
 
@@ -518,25 +486,21 @@ def show_ticket_management():
                 key="employee_filter_select"
             )
 
-        # Filter in Session State speichern
         st.session_state.ticket_filters.update({
             "status_filter": status_filter,
             "priority_filter": priority_filter,
             "employee_filter": employee_filter
         })
 
-        # Tickets filtern
         filtered_tickets = tickets_df[
-            (tickets_df['Status'].isin(status_filter)) &
-            (tickets_df['Prioritaet'].isin(priority_filter)) &
-            (tickets_df['Zugewiesen_an'].isin(employee_filter))
+            (tickets_df["Status"].isin(status_filter)) &
+            (tickets_df["Prioritaet"].isin(priority_filter)) &
+            (tickets_df["Zugewiesen_an"].isin(employee_filter))
             ]
 
-        # Interaktive Ticket-Tabelle
         st.markdown("### 📋 Tickets")
 
         if not filtered_tickets.empty:
-            # Konfiguration für die Tabelle
             column_config = {
                 "ID_Ticket": st.column_config.NumberColumn("Ticket-ID", width="small"),
                 "Titel": st.column_config.TextColumn("Titel", width="large"),
@@ -555,24 +519,23 @@ def show_ticket_management():
                 "Erstellt_am": st.column_config.DatetimeColumn("Erstellt am", width="medium"),
             }
 
-            # Editierbare Tabelle
             edited_tickets = st.data_editor(
-                filtered_tickets[['ID_Ticket', 'Titel', 'Status', 'Prioritaet', 'Kunde', 'Zugewiesen_an', 'Erstellt_am']],
+                filtered_tickets[["ID_Ticket", "Titel", "Status", "Prioritaet", "Kunde", "Zugewiesen_an", "Erstellt_am"]],
                 use_container_width=True,
                 hide_index=True,
                 column_config=column_config,
-                disabled=['ID_Ticket', 'Titel', 'Kunde', 'Zugewiesen_an', 'Erstellt_am'],
+                disabled=["ID_Ticket", "Titel", "Kunde", "Zugewiesen_an", "Erstellt_am"],
                 key="ticket_table"
             )
 
-            # Änderungen speichern
             if st.button("💾 Änderungen speichern"):
                 try:
+                    engine = get_database_engine()
                     with engine.begin() as conn:
                         for index, row in edited_tickets.iterrows():
-                            ticket_id = row['ID_Ticket']
-                            new_status = row['Status']
-                            new_priority = row['Prioritaet']
+                            ticket_id = row["ID_Ticket"]
+                            new_status = row["Status"]
+                            new_priority = row["Prioritaet"]
 
                             conn.execute(text("""
                                 UPDATE ticket 
@@ -585,6 +548,7 @@ def show_ticket_management():
                             })
 
                     st.success("Änderungen erfolgreich gespeichert!")
+                    get_tickets_df.clear() # Clear cache to refetch updated data
                     st.rerun()
 
                 except Exception as e:
@@ -595,6 +559,8 @@ def show_ticket_management():
 
     except Exception as e:
         st.error(f"Fehler beim Laden der Tickets: {str(e)}")
+        import traceback
+        st.text(traceback.format_exc())
 
 
 def show_employee_management():
@@ -603,12 +569,10 @@ def show_employee_management():
     """
     st.subheader("👥 Mitarbeiter-Verwaltung")
 
-    # Session-State Initialisierung
     initialize_session_state()
 
     st.info("📝 **Hinweis:** Da keine Mitarbeiterliste vorhanden ist, werden Standardmitarbeiter verwendet.")
 
-    # Aktuelle Mitarbeiter anzeigen
     st.markdown("### 📋 Aktuelle Mitarbeiter")
 
     employees_df = pd.DataFrame(st.session_state.employees)
@@ -642,15 +606,22 @@ def show_employee_management():
 
         if submitted:
             if new_name and new_email:
-                # Neuen Mitarbeiter zur Liste hinzufügen (in Session State)
-                new_id = max([emp["id"] for emp in st.session_state.employees]) + 1
-                st.session_state.employees.append({
-                    "id": new_id,
-                    "name": new_name,
-                    "email": new_email
-                })
-                st.success(f"Mitarbeiter {new_name} erfolgreich hinzugefügt!")
-                st.rerun()
+                # Add new employee to DB and then update session state
+                try:
+                    engine = get_database_engine()
+                    with engine.begin() as conn:
+                        conn.execute(text("""
+                            INSERT INTO mitarbeiter (Name, Email)
+                            VALUES (:name, :email)
+                        """), {"name": new_name, "email": new_email})
+                    st.success(f"Mitarbeiter {new_name} erfolgreich hinzugefügt!")
+                    # Re-initialize session state to fetch updated employee list from DB
+                    initialize_session_state()
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Fehler beim Hinzufügen des Mitarbeiters zur Datenbank: {str(e)}")
+                    import traceback
+                    st.text(traceback.format_exc())
             else:
                 st.error("Bitte Name und E-Mail eingeben.")
 
@@ -659,15 +630,10 @@ def show_email_tab():
     """
     Ursprüngliche E-Mail-Versendung mit State-Preservation.
     """
-    from Main import engine
-    from Ticket import log_ticket_change
-
     st.subheader("📧 E-Mail versenden")
 
-    # Session-State Initialisierung
     initialize_session_state()
 
-    # E-Mail-Konfiguration
     st.markdown("### E-Mail-Konfiguration")
 
     col1, col2 = st.columns(2)
@@ -709,7 +675,6 @@ def show_email_tab():
             key="app_password_input"
         )
 
-    # SMTP-Konfiguration in Session State speichern
     st.session_state.smtp_config.update({
         "smtp_server": smtp_server,
         "smtp_port": smtp_port,
@@ -720,31 +685,20 @@ def show_email_tab():
 
     st.markdown("---")
 
-    # E-Mail-Inhalt
     st.markdown("### E-Mail-Inhalt")
 
-    # Ticket-Auswahl für E-Mail-Kontext
     try:
-        ticket_query = """
-        SELECT t.ID_Ticket, t.Titel, k.Name as Kunde, k.Email as Kunde_Email
-        FROM ticket t
-        LEFT JOIN kunde k ON t.ID_Kunde = k.ID_Kunde
-        ORDER BY t.ID_Ticket DESC
-        """
-        with engine.connect() as conn:
-            result = conn.execute(text(ticket_query))
-            tickets_df = pd.DataFrame(result.fetchall(), columns=result.keys())
+        tickets_df = get_tickets_df()
     except Exception as e:
         st.error(f"Fehler beim Laden der Tickets: {str(e)}")
         tickets_df = pd.DataFrame()
 
-    # Ticket-Auswahl
+    selected_ticket_data = None
     if not tickets_df.empty:
         st.markdown("#### Ticket-bezogene E-Mail (optional)")
 
-        ticket_options = ["Keine Ticket-Auswahl"] + [f"#{row['ID_Ticket']} - {row['Titel']} ({row['Kunde']})" for _, row in tickets_df.iterrows()]
+        ticket_options = ["Keine Ticket-Auswahl"] + [f"#{row["ID_Ticket"]} - {row["Titel"]} ({row["Kunde"]})" for _, row in tickets_df.iterrows()]
 
-        # Aktuellen Index basierend auf Session State bestimmen
         current_index = 0
         if st.session_state.selected_ticket_for_email and st.session_state.selected_ticket_for_email in ticket_options:
             current_index = ticket_options.index(st.session_state.selected_ticket_for_email)
@@ -756,22 +710,18 @@ def show_email_tab():
             key="ticket_selection_for_email"
         )
 
-        # Auswahl in Session State speichern
         st.session_state.selected_ticket_for_email = selected_ticket_option
 
-        selected_ticket_data = None
         if selected_ticket_option != "Keine Ticket-Auswahl":
             ticket_id = int(selected_ticket_option.split("#")[1].split(" - ")[0])
-            selected_ticket_data = tickets_df[tickets_df['ID_Ticket'] == ticket_id].iloc[0]
+            selected_ticket_data = tickets_df[tickets_df["ID_Ticket"] == ticket_id].iloc[0]
 
-    # E-Mail-Formular
     col1, col2 = st.columns(2)
 
     with col1:
-        # Empfänger vorausfüllen, wenn Ticket ausgewählt
         default_recipient = st.session_state.email_content["recipient_email"]
-        if 'selected_ticket_data' in locals() and selected_ticket_data is not None and selected_ticket_data['Kunde_Email']:
-            default_recipient = selected_ticket_data['Kunde_Email']
+        if selected_ticket_data is not None and selected_ticket_data["Kunde_Email"]:
+            default_recipient = selected_ticket_data["Kunde_Email"]
 
         recipient_email = st.text_input(
             "Empfänger E-Mail",
@@ -780,10 +730,9 @@ def show_email_tab():
         )
 
     with col2:
-        # Betreff vorausfüllen, wenn Ticket ausgewählt
         default_subject = st.session_state.email_content["email_subject"]
-        if 'selected_ticket_data' in locals() and selected_ticket_data is not None:
-            default_subject = f"Ticket #{selected_ticket_data['ID_Ticket']}: {selected_ticket_data['Titel']}"
+        if selected_ticket_data is not None:
+            default_subject = f"Ticket #{selected_ticket_data["ID_Ticket"]}: {selected_ticket_data["Titel"]}"
 
         email_subject = st.text_input(
             "Betreff",
@@ -791,17 +740,9 @@ def show_email_tab():
             key="email_subject_input"
         )
 
-    # E-Mail-Text
     default_body = st.session_state.email_content["email_body"]
-    if 'selected_ticket_data' in locals() and selected_ticket_data is not None and not default_body:
-        default_body = f"""Sehr geehrte Damen und Herren,
-
-bezugnehmend auf Ihr Ticket #{selected_ticket_data['ID_Ticket']} "{selected_ticket_data['Titel']}" möchten wir Sie über den aktuellen Status informieren.
-
-[Hier können Sie Ihre Nachricht eingeben]
-
-Mit freundlichen Grüßen
-Ihr Support-Team"""
+    if selected_ticket_data is not None and not default_body:
+        default_body = f"""Sehr geehrte Damen und Herren,\n\nbezugnehmend auf Ihr Ticket #{selected_ticket_data["ID_Ticket"]} "{selected_ticket_data["Titel"]}" möchten wir Sie über den aktuellen Status informieren.\n\n[Hier können Sie Ihre Nachricht eingeben]\n\nMit freundlichen Grüßen\nIhr Support-Team"""
 
     email_body = st.text_area(
         "E-Mail-Text",
@@ -810,14 +751,12 @@ Ihr Support-Team"""
         key="email_body_input"
     )
 
-    # E-Mail-Inhalt in Session State speichern
     st.session_state.email_content.update({
         "recipient_email": recipient_email,
         "email_subject": email_subject,
         "email_body": email_body
     })
 
-    # Vorschau
     if st.checkbox("E-Mail-Vorschau anzeigen"):
         st.markdown("### Vorschau")
         st.markdown(f"**Von:** {sender_email}")
@@ -828,9 +767,7 @@ Ihr Support-Team"""
 
     st.markdown("---")
 
-    # Senden-Button
     if st.button("📧 E-Mail senden", type="primary"):
-        # Validierung
         if not sender_email:
             st.error("Bitte geben Sie eine Absender-E-Mail-Adresse ein.")
         elif not app_password:
@@ -842,7 +779,6 @@ Ihr Support-Team"""
         elif not email_body:
             st.error("Bitte geben Sie einen E-Mail-Text ein.")
         else:
-            # E-Mail senden
             with st.spinner("E-Mail wird gesendet..."):
                 success, message = send_email(
                     smtp_server=smtp_server,
@@ -858,11 +794,11 @@ Ihr Support-Team"""
             if success:
                 st.success(message)
 
-                # E-Mail-Versendung in Ticket-Historie protokollieren (falls Ticket ausgewählt)
-                if 'selected_ticket_data' in locals() and selected_ticket_data is not None:
+                if selected_ticket_data is not None:
                     try:
+                        from Ticket import log_ticket_change # Import here to avoid circular dependency
                         log_ticket_change(
-                            selected_ticket_data['ID_Ticket'],
+                            selected_ticket_data["ID_Ticket"],
                             "E-Mail gesendet",
                             "",
                             f"E-Mail an {recipient_email} mit Betreff '{email_subject}' gesendet",
@@ -875,7 +811,6 @@ Ihr Support-Team"""
             else:
                 st.error(message)
 
-    # Hilfe-Bereich
     with st.expander("ℹ️ Hilfe zur E-Mail-Konfiguration"):
         st.markdown("""
         ### Gmail-Konfiguration:
