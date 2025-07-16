@@ -12,12 +12,6 @@ from datetime import datetime
 # For standalone execution, you might need to define a dummy engine or connect to a test DB
 
 # Standardmitarbeiter (da keine Liste vorhanden ist)
-DEFAULT_EMPLOYEES = [
-    {"id": 1, "name": "Max Mustermann", "email": "max.mustermann@firma.de"},
-    {"id": 2, "name": "Anna Schmidt", "email": "anna.schmidt@firma.de"},
-    {"id": 3, "name": "Thomas Weber", "email": "thomas.weber@firma.de"},
-    {"id": 4, "name": "Lisa Müller", "email": "lisa.mueller@firma.de"}
-]
 
 # Ticket-Status und Prioritäten
 TICKET_STATUS = ["offen", "in bearbeitung", "erledigt"]
@@ -30,7 +24,7 @@ def initialize_session_state():
     """
     # Consolidate session state initialization
     defaults = {
-        "employees": DEFAULT_EMPLOYEES.copy(), # Fallback, will be overwritten by DB if successful
+        "employees": [], # Initialize as empty, will be populated from DB
         "email_config": {
             "email": "kolobok1329@googlemail.com",
             "password": "dqrmtejgeuxmzqtn",
@@ -64,8 +58,8 @@ def initialize_session_state():
         if key not in st.session_state:
             st.session_state[key] = value
 
-    # Load employees from DB if not already loaded or if it's still the default fallback
-    if st.session_state.employees == DEFAULT_EMPLOYEES:
+    # Load employees from DB if not already loaded
+    if not st.session_state.employees:
         try:
             from Main import engine # Import engine here to avoid circular dependency if Main imports this file
             with engine.connect() as conn:
@@ -831,3 +825,4 @@ def show_email_tab():
         - **Yahoo:** smtp.mail.yahoo.com, Port 587
         - Konsultieren Sie die Dokumentation Ihres E-Mail-Anbieters für spezifische Einstellungen
         """)
+
