@@ -25,15 +25,33 @@ def initialize_session_state():
     """
     Initialisiert alle Session State Variablen für die Anwendung.
     """
-    # Mitarbeiter-Liste in Session State
+    from Main import engine  # falls nicht bereits importiert
+
+    from Main import engine
+
     if "employees" not in st.session_state:
-        st.session_state.employees = DEFAULT_EMPLOYEES.copy()
+        try:
+            with engine.connect() as conn:
+                st.info("✅ Verbindung zur Datenbank erfolgreich.")
+                result = conn.execute(text("SELECT ID_Mitarbeiter AS id, Name AS name, Email AS email FROM mitarbeiter"))
+                rows = result.fetchall()
+                if not rows:
+                    st.warning("⚠️ Keine Mitarbeiter in der Tabelle gefunden.")
+                else:
+                    st.success(f"✅ {len(rows)} Mitarbeiter geladen.")
+                st.session_state.employees = [dict(row._mapping) for row in rows]
+        except Exception as e:
+            st.error(f"❌ Fehler beim Laden der Mitarbeiter: {e}")
+            import traceback
+            st.text(traceback.format_exc())
+            st.session_state.employees = DEFAULT_EMPLOYEES.copy()
+    # Fallback
 
     # E-Mail-Konfiguration
     if "email_config" not in st.session_state:
         st.session_state.email_config = {
-            "email": "",
-            "password": "",
+            "email": "kolobok1329@googlemail.com",
+            "password": "dqrmtejgeuxmzqtn",
             "imap_server": "imap.gmail.com",
             "email_limit": 10
         }
@@ -137,7 +155,7 @@ def send_email(smtp_server, smtp_port, email, app_password, to_email, subject, b
         return False, f"Fehler beim Senden der E-Mail: {str(e)}"
 
 
-def create_ticket_from_email(email_data, user_id=1, assigned_employee_id=None):
+def create_ticket_from_email(email_data, user_id=1, assigned_employee_id=None, priority="mittel"):
     """
     Erstellt ein Ticket aus einer E-Mail mit Mitarbeiterzuweisung.
     """
@@ -176,14 +194,14 @@ def create_ticket_from_email(email_data, user_id=1, assigned_employee_id=None):
 
             # Ticket mit erweiterten Feldern erstellen
             conn.execute(text("""
-                INSERT INTO ticket (Titel, Beschreibung, Erstellt_am, ID_Kunde, ID_Status)
-                VALUES (:title, :description, CURRENT_TIMESTAMP, :kunde_id, :id_status)
+                INSERT INTO ticket (Titel, Beschreibung, Erstellt_am, ID_Kunde, ID_Status, Priorität, ID_Mitarbeiter)
+                VALUES (:title, :description, CURRENT_TIMESTAMP, :kunde_id, :id_status, :priority, :assigned_to)
             """), {
                 "title": title,
                 "description": description,
                 "kunde_id": kunde_id,
                 "id_status": 1,
-                "priority": "mittel",
+                "priority": priority,
                 "assigned_to": assigned_employee_id
             })
 
@@ -317,7 +335,17 @@ def show_email_inbox_tab():
                 key="employee_assignment_select"
             )
 
-            # Mitarbeiter-ID ermitteln und in Session State speichern
+                        # Priorität auswählen (z. B. in show_email_inbox_tab())
+            priorities = ["niedrig", "mittel", "hoch"]
+            selected_priority = st.selectbox(
+                "Priorität für neue Tickets:",
+                options=priorities,
+                index=1,  # "mittel" als Standard
+                key="ticket_priority_select"
+            )
+
+
+# Mitarbeiter-ID ermitteln und in Session State speichern
             assigned_employee_id = None
             if selected_employee_option != "Nicht zuweisen":
                 employee_name = selected_employee_option.split(" (")[0]
@@ -326,6 +354,8 @@ def show_email_inbox_tab():
                     assigned_employee_id = employee["id"]
 
             st.session_state.selected_employee_for_assignment = selected_employee_option
+            st.session_state.selected_ticket_priority = selected_priority
+
 
         with col2:
             # Alle E-Mails auswählen/abwählen
@@ -364,7 +394,8 @@ def show_email_inbox_tab():
                     success, msg = create_ticket_from_email(
                         email_data,
                         user_id=user_id,
-                        assigned_employee_id=assigned_employee_id
+                        assigned_employee_id=assigned_employee_id,
+                        priority=st.session_state.selected_ticket_priority
                     )
 
                     messages.append(msg)
