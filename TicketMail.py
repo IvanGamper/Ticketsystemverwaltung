@@ -85,7 +85,6 @@ def get_database_engine():
     from Main import engine
     return engine
 
-
 def fetch_emails(email, password, imap_server="imap.gmail.com", limit=10):
     """
     Holt E-Mails über IMAP ab, ohne sie zu löschen.
@@ -106,7 +105,6 @@ def fetch_emails(email, password, imap_server="imap.gmail.com", limit=10):
     except Exception as e:
         st.error(f"Fehler beim Abrufen der E-Mails: {str(e)}")
         return [] # Return empty list on error for consistent type
-
 
 def send_email(smtp_server, smtp_port, email, app_password, to_email, subject, body, use_ssl=True):
     """
@@ -135,7 +133,6 @@ def send_email(smtp_server, smtp_port, email, app_password, to_email, subject, b
 
     except Exception as e:
         return False, f"Fehler beim Senden der E-Mail: {str(e)}"
-
 
 def create_ticket_from_email(email_data, user_id=1, assigned_employee_id=None, priority="mittel"):
     """
@@ -201,7 +198,6 @@ def create_ticket_from_email(email_data, user_id=1, assigned_employee_id=None, p
         import traceback
         st.text(traceback.format_exc())
         return False, f"Fehler beim Erstellen des Tickets: {str(e)}"
-
 
 def show_email_inbox_tab():
     """
@@ -405,7 +401,6 @@ def show_email_inbox_tab():
                     st.markdown("**Nachricht:**")
                     st.text_area("", value=selected_email["Nachricht"], height=200, disabled=True, key="email_content_display")
 
-
 @st.cache_data(ttl=600) # Cache for 10 minutes
 def get_tickets_df():
     engine = get_database_engine()
@@ -433,7 +428,6 @@ def get_tickets_df():
         result = conn.execute(text(ticket_query))
         tickets_df = pd.DataFrame(result.fetchall(), columns=result.keys())
     return tickets_df
-
 
 def show_ticket_management():
     """
@@ -557,7 +551,6 @@ def show_ticket_management():
         import traceback
         st.text(traceback.format_exc())
 
-
 def show_employee_management():
     """
     Einfache Mitarbeiterverwaltung (da keine Liste vorhanden ist).
@@ -619,7 +612,6 @@ def show_employee_management():
                     st.text(traceback.format_exc())
             else:
                 st.error("Bitte Name und E-Mail eingeben.")
-
 
 def show_email_tab():
     """
@@ -826,6 +818,7 @@ def show_email_tab():
         - **Yahoo:** smtp.mail.yahoo.com, Port 587
         - Konsultieren Sie die Dokumentation Ihres E-Mail-Anbieters für spezifische Einstellungen
         """)
+
 def auto_convert_new_emails_to_tickets():
     """
     Automatisch neue E-Mails abrufen und in Tickets umwandeln.

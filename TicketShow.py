@@ -1,95 +1,24 @@
+
 import altair as alt
 import streamlit as st
 import pandas as pd
 from sqlalchemy import text
-from Authorisation import (generate_salt, hash_password)
+from Authorisation import generate_salt, hash_password
+from TicketMail import show_email_inbox_tab, show_email_tab
 
-#Ticketsystem anzeigen
-def show_ticket_system():
+# ==============================================================================
+# 2. DATA ACCESS & HELPERS
+# ==============================================================================
 
-    from TicketMail import show_email_inbox_tab, show_email_tab
+def fetch_data_for_select(engine, query, value_col, name_col):
+    """Fetches data for a selectbox and returns options and an ID map."""
+    df = pd.read_sql(query, con=engine)
+    options = df[name_col].tolist()
+    id_map = pd.Series(df[value_col].values, index=df[name_col]).to_dict()
+    return options, id_map
 
-    from Main import engine
-    st.title("🎫 Ticketsystem")
-
-    # Tabs für verschiedene Funktionen
-    ticket_tabs = st.tabs(["📋 Ticketübersicht", "📌 Kanban-Board", "✏️ Ticket bearbeiten", "➕ Neues Ticket", "📊 Statistiken", "⚙️ Einstellungen", "📧 EMAIL"])
-
-    # Tab: Ticketübersicht
-    with ticket_tabs[0]:
-        show_ticket_overview()
-
-    with ticket_tabs[1]:
-        show_kanban_board()
-
-    # Tab: Ticket bearbeiten (NEU)
-    with ticket_tabs[2]:
-        show_ticket_edit_tab()
-
-    # Tab: Neues Ticket
-    with ticket_tabs[3]:
-        show_new_ticket_form()
-
-    # Tab: Statistiken
-    with ticket_tabs[4]:
-        show_ticket_statistics()
-
-    # Tab: Einstellungen
-    with ticket_tabs[5]:
-        show_settings()
-
-    # Tab: EMAIL
-    with ticket_tabs[6]:
-        st.subheader("📧 E-Mail")
-
-        email_mode = st.radio("E-Mail-Funktion wählen:", ["📧 E-Mail senden", "📥 E-Mail empfangen"])
-
-        if email_mode == "📧 E-Mail senden":
-            show_email_tab()
-        elif email_mode == "📥 E-Mail empfangen":
-            show_email_inbox_tab()
-
-# Ticketübersicht anzeigen
-def show_ticket_overview():
-    from Main import engine
-    st.subheader("📋 Ticketübersicht")
-
-    # Suchfunktion
-    st.subheader("🔍 Ticket suchen")
-    search_col1, search_col2 = st.columns([3, 1])
-
-    with search_col1:
-        search_term = st.text_input("Suchbegriff eingeben (Titel, Beschreibung, Kunde, Mitarbeiter)", placeholder="z.B. Server, Netzwerk, Max Mustermann...")
-
-    with search_col2:
-        search_field = st.selectbox(
-            "Suchfeld",
-            ["Alle Felder", "Titel", "Beschreibung", "Kunde", "Mitarbeiter"]
-        )
-
-    # Filter-Optionen
-    st.subheader("Filter")
-    col1, col2, col3 = st.columns(3)
-
-    with col1:
-        # Status-Optionen abrufen
-        status_query = "SELECT Name FROM status ORDER BY Name"
-        status_df = pd.read_sql(status_query, con=engine)
-        status_options = ["Alle"] + status_df["Name"].tolist()
-        status_filter = st.selectbox("Status", status_options)
-
-    with col2:
-        priority_options = ["Alle", "Hoch", "Mittel", "Niedrig"]
-        priority_filter = st.selectbox("Priorität", priority_options)
-
-    with col3:
-        # Mitarbeiter-Optionen abrufen
-        mitarbeiter_query = "SELECT Name FROM mitarbeiter ORDER BY Name"
-        mitarbeiter_df = pd.read_sql(mitarbeiter_query, con=engine)
-        mitarbeiter_options = ["Alle"] + mitarbeiter_df["Name"].tolist()
-        mitarbeiter_filter = st.selectbox("Mitarbeiter", mitarbeiter_options)
-
-    # SQL-Query mit dynamischen Filtern
+def build_ticket_query(filters, search):
+    """Builds the dynamic SQL query and parameters for ticket filtering and search."""
     query = """
     SELECT t.ID_Ticket, t.Titel, t.Beschreibung, t.Priorität, 
            s.Name as Status, m.Name as Mitarbeiter, k.Name as Kunde,
@@ -100,93 +29,219 @@ def show_ticket_overview():
     LEFT JOIN kunde k ON t.ID_Kunde = k.ID_Kunde
     WHERE 1=1
     """
-
     params = {}
 
-    # Filter anwenden
-    if status_filter != "Alle":
+    # Apply filters
+    if filters.get("status") != "Alle":
         query += " AND s.Name = :status"
-        params["status"] = status_filter
-
-    if priority_filter != "Alle":
+        params["status"] = filters["status"]
+    if filters.get("priority") != "Alle":
         query += " AND t.Priorität = :priority"
-        params["priority"] = priority_filter
+        params["priority"] = filters["priority"]
+    if filters.get("employee") != "Alle":
+        query += " AND m.Name = :employee"
+        params["employee"] = filters["employee"]
 
-    if mitarbeiter_filter != "Alle":
-        query += " AND m.Name = :mitarbeiter"
-        params["mitarbeiter"] = mitarbeiter_filter
+    # Apply search
+    if search and search.get("term"):
+        term = f"%{search['term']}%"
+        params["search_term"] = term
+        field_map = {
+            "Titel": "t.Titel", "Beschreibung": "t.Beschreibung",
+            "Kunde": "k.Name", "Mitarbeiter": "m.Name"
+        }
+        if search["field"] == "Alle Felder":
+            query += " AND (t.Titel LIKE :search_term OR t.Beschreibung LIKE :search_term OR k.Name LIKE :search_term OR m.Name LIKE :search_term)"
+        else:
+            query += f" AND {field_map[search['field']]} LIKE :search_term"
 
-    # Suchbegriff anwenden
-    if search_term:
-        if search_field == "Alle Felder":
-            query += """ AND (
-                t.Titel LIKE :search_term OR 
-                t.Beschreibung LIKE :search_term OR 
-                k.Name LIKE :search_term OR 
-                m.Name LIKE :search_term
-            )"""
-            params["search_term"] = f"%{search_term}%"
-        elif search_field == "Titel":
-            query += " AND t.Titel LIKE :search_term"
-            params["search_term"] = f"%{search_term}%"
-        elif search_field == "Beschreibung":
-            query += " AND t.Beschreibung LIKE :search_term"
-            params["search_term"] = f"%{search_term}%"
-        elif search_field == "Kunde":
-            query += " AND k.Name LIKE :search_term"
-            params["search_term"] = f"%{search_term}%"
-        elif search_field == "Mitarbeiter":
-            query += " AND m.Name LIKE :search_term"
-            params["search_term"] = f"%{search_term}%"
-
-    # Sortierung
     query += " ORDER BY t.Erstellt_am DESC"
+    return query, params
 
-    # Tickets abrufen
+# ==============================================================================
+# 3. UI COMPONENTS
+# ==============================================================================
+
+def show_ticket_overview():
+    """UI for the ticket overview, search, and filter tab."""
+    from Main import engine
+    st.subheader("📋 Ticketübersicht")
+
+    # --- Search and Filter UI ---
+    st.subheader("🔍 Ticket suchen")
+    search_col1, search_col2 = st.columns([3, 1])
+    search_term = search_col1.text_input("Suchbegriff", placeholder="z.B. Server, Netzwerk...")
+    search_field = search_col2.selectbox("Suchfeld", ["Alle Felder", "Titel", "Beschreibung", "Kunde", "Mitarbeiter"])
+
+    st.subheader("Filter")
+    col1, col2, col3 = st.columns(3)
+    status_options, _ = fetch_data_for_select(engine, "SELECT ID_Status, Name FROM status ORDER BY Name", "ID_Status", "Name")
+    status_filter = col1.selectbox("Status", ["Alle"] + status_options)
+    priority_filter = col2.selectbox("Priorität", ["Alle", "Hoch", "Mittel", "Niedrig"])
+    mitarbeiter_options, _ = fetch_data_for_select(engine, "SELECT ID_Mitarbeiter, Name FROM mitarbeiter ORDER BY Name", "ID_Mitarbeiter", "Name")
+    mitarbeiter_filter = col3.selectbox("Mitarbeiter", ["Alle"] + mitarbeiter_options)
+
+    # --- Fetch and Display Tickets ---
+    filters = {"status": status_filter, "priority": priority_filter, "employee": mitarbeiter_filter}
+    search = {"term": search_term, "field": search_field}
+    query, params = build_ticket_query(filters, search)
+
+    try:
+        tickets_df = pd.read_sql(query, engine, params=params)
+        st.write(f"**{len(tickets_df)} Tickets gefunden**")
+        if tickets_df.empty:
+            st.info("Keine Tickets gefunden, die den Kriterien entsprechen.")
+        else:
+            st.dataframe(tickets_df, use_container_width=True)
+            with st.expander("Ticket-Details anzeigen"):
+                selected_id = st.selectbox(
+                    "Ticket auswählen",
+                    options=tickets_df["ID_Ticket"].tolist(),
+                    format_func=lambda x: f"#{x} - {tickets_df.loc[tickets_df['ID_Ticket'] == x, 'Titel'].iloc[0]}"
+                )
+                if selected_id:
+                    show_ticket_details(selected_id)
+    except Exception as e:
+        st.error(f"Fehler beim Abrufen der Tickets: {e}")
+
+def show_ticket_details(ticket_id):
+    """Displays details, comments, and history for a single ticket."""
+    from Main import engine
+    # Ticket-Details abrufen
+    query = """
+    SELECT t.ID_Ticket, t.Titel, t.Beschreibung, t.Priorität, 
+           s.Name as Status, m.Name as Mitarbeiter, k.Name as Kunde,
+           t.Erstellt_am, t.Geändert_am
+    FROM ticket t
+    LEFT JOIN status s ON t.ID_Status = s.ID_Status
+    LEFT JOIN mitarbeiter m ON t.ID_Mitarbeiter = m.ID_Mitarbeiter
+    LEFT JOIN kunde k ON t.ID_Kunde = k.ID_Kunde
+    WHERE t.ID_Ticket = :ticket_id
+    """
+
     try:
         with engine.connect() as conn:
-            result = conn.execute(text(query), params)
-            tickets_df = pd.DataFrame(result.fetchall(), columns=result.keys())
+            result = conn.execute(text(query), {"ticket_id": ticket_id})
+            ticket = result.fetchone()
     except Exception as e:
-        st.error(f"Fehler beim Abrufen der Tickets: {str(e)}")
-        tickets_df = pd.DataFrame()
+        st.error(f"Fehler beim Abrufen der Ticket-Details: {str(e)}")
+        return
 
-    # Anzeige der Tickets
-    st.write(f"**{len(tickets_df)} Tickets gefunden**")
-
-    if tickets_df.empty:
-        if search_term:
-            st.warning(f"Keine Tickets gefunden, die den Suchkriterien '{search_term}' entsprechen.")
-        else:
-            st.info("Keine Tickets gefunden, die den Filterkriterien entsprechen.")
-    else:
-        # Ticket-Tabelle anzeigen
-        st.dataframe(tickets_df, use_container_width=True)
-
+    if ticket:
         # Ticket-Details anzeigen
-        if "selected_ticket_id" not in st.session_state:
-            st.session_state.selected_ticket_id = None
+        st.subheader(f"Ticket #{ticket.ID_Ticket}: {ticket.Titel}")
 
-        # Ticket auswählen
-        selected_ticket = st.selectbox(
-            "Ticket auswählen",
-            tickets_df["ID_Ticket"].tolist(),
-            format_func=lambda x: f"#{x} - {tickets_df[tickets_df['ID_Ticket'] == x]['Titel'].iloc[0]}"
-        )
+        col1, col2, col3 = st.columns(3)
 
-        if selected_ticket:
-            st.session_state.selected_ticket_id = selected_ticket
-            show_ticket_details(selected_ticket)
+        with col1:
+            st.write(f"**Status:** {ticket.Status}")
+            st.write(f"**Priorität:** {ticket.Priorität}")
 
-# Ticket-Bearbeitungstab anzeigen
+        with col2:
+            st.write(f"**Mitarbeiter:** {ticket.Mitarbeiter}")
+            st.write(f"**Kunde:** {ticket.Kunde}")
+
+        with col3:
+            st.write(f"**Erstellt am:** {ticket.Erstellt_am}")
+            st.write(f"**Geändert am:** {ticket.Geändert_am}")
+
+        st.markdown("---")
+        st.write("**Beschreibung:**")
+        st.write(ticket.Beschreibung)
+
+        # Kommentare abrufen
+        st.markdown("---")
+        st.subheader("Kommentare")
+
+        kommentar_query = """
+        SELECT k.ID_Kommentar, k.Kommentar_Text AS Kommentar, m.Name as Mitarbeiter, k.Erstellt_am
+        FROM ticket_kommentar k
+        JOIN mitarbeiter m ON k.ID_Mitarbeiter = m.ID_Mitarbeiter
+        WHERE k.ID_Ticket = :ID_Ticket
+        ORDER BY k.Erstellt_am DESC
+        """
+
+        try:
+            with engine.connect() as conn:
+                result = conn.execute(text(kommentar_query), {"ID_Ticket": ticket_id})
+                kommentare = result.fetchall()
+        except Exception as e:
+            st.error(f"Fehler beim Abrufen der Kommentare: {str(e)}")
+            kommentare = []
+
+        if not kommentare:
+            st.info("Keine Kommentare vorhanden.")
+        else:
+            for kommentar in kommentare:
+                st.markdown(f"""
+                **{kommentar.Mitarbeiter}** - {kommentar.Erstellt_am}
+                
+                {kommentar.Kommentar}
+                
+                ---
+                """)
+
+        # Neuen Kommentar hinzufügen
+        st.subheader("Neuer Kommentar")
+
+        with st.form(f"new_comment_form_{ticket_id}"):
+            comment_text = st.text_area("Kommentar")
+            submit_comment = st.form_submit_button("Kommentar hinzufügen")
+
+        if submit_comment:
+            if not comment_text:
+                st.error("Bitte geben Sie einen Kommentar ein.")
+            else:
+                try:
+                    with engine.begin() as conn:
+                        insert_query = text("""
+                        INSERT INTO ticket_kommentar (ID_Ticket, ID_Mitarbeiter, Kommentar_Text, Erstellt_am)
+                        VALUES (:ID_Ticket, :ID_Mitarbeiter, :Kommentar_Text, NOW())
+                        """)
+                        conn.execute(insert_query, {
+                            "ID_Ticket": ticket_id,
+                            "ID_Mitarbeiter": st.session_state.user_id,
+                            "Kommentar_Text": comment_text
+                        })
+
+                    st.success("Kommentar erfolgreich hinzugefügt!")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Fehler beim Hinzufügen des Kommentars: {str(e)}")
+
+        # --- Ticket-Historie anzeigen ---
+        st.markdown("---")
+        st.subheader("🕘 Änderungshistorie")
+
+        try:
+            historie_query = """
+            SELECT th.Feldname, th.Alter_Wert, th.Neuer_Wert, m.Name AS Geändert_von, th.Geändert_am
+            FROM ticket_historie th
+            LEFT JOIN mitarbeiter m ON th.Geändert_von = m.ID_Mitarbeiter
+            WHERE th.ID_Ticket = :ticket_id
+            ORDER BY th.Geändert_am DESC
+            """
+            with engine.connect() as conn:
+                result = conn.execute(text(historie_query), {"ticket_id": ticket_id})
+                history_entries = result.fetchall()
+        except Exception as e:
+            st.error(f"Fehler beim Abrufen der Historie: {str(e)}")
+            history_entries = []
+
+        if not history_entries:
+            st.info("Keine Änderungen protokolliert.")
+        else:
+            for eintrag in history_entries:
+                st.markdown(f"""
+                🔹 **{eintrag.Feldname}** geändert von **{eintrag.Alter_Wert}** zu **{eintrag.Neuer_Wert}**  
+                🧑‍💼 Durch: *{eintrag.Geändert_von}* am *{eintrag.Geändert_am}*
+                """)
+
 def show_ticket_edit_tab():
+    """UI for editing a ticket."""
     from Ticket import log_ticket_change
     from Main import engine
-
-
     st.subheader("✏️ Ticket bearbeiten")
-
-
 
     # Alle Tickets laden für die Auswahl
     try:
@@ -594,141 +649,92 @@ def show_ticket_edit_tab():
                     """)
                     st.divider()
 
-# Ticket-Details anzeigen
-def show_ticket_details(ticket_id):
+    # The original logic from your file can be placed here.
+    st.info("Der Bearbeitungsbereich für Tickets wird hier implementiert.")
+
+def show_new_ticket_form():
+    """UI form for creating a new ticket."""
+    from Ticket import create_ticket_relations
     from Main import engine
-    # Ticket-Details abrufen
-    query = """
-    SELECT t.ID_Ticket, t.Titel, t.Beschreibung, t.Priorität, 
-           s.Name as Status, m.Name as Mitarbeiter, k.Name as Kunde,
-           t.Erstellt_am, t.Geändert_am
-    FROM ticket t
-    LEFT JOIN status s ON t.ID_Status = s.ID_Status
-    LEFT JOIN mitarbeiter m ON t.ID_Mitarbeiter = m.ID_Mitarbeiter
-    LEFT JOIN kunde k ON t.ID_Kunde = k.ID_Kunde
-    WHERE t.ID_Ticket = :ticket_id
-    """
+    st.subheader("➕ Neues Ticket erstellen")
 
-    try:
-        with engine.connect() as conn:
-            result = conn.execute(text(query), {"ticket_id": ticket_id})
-            ticket = result.fetchone()
-    except Exception as e:
-        st.error(f"Fehler beim Abrufen der Ticket-Details: {str(e)}")
-        return
+    # Formular zum Erstellen eines neuen Tickets
+    with st.form("new_ticket_form"):
+        # Titel und Beschreibung
+        titel = st.text_input("Titel")
+        beschreibung = st.text_area("Beschreibung")
 
-    if ticket:
-        # Ticket-Details anzeigen
-        st.subheader(f"Ticket #{ticket.ID_Ticket}: {ticket.Titel}")
-
-        col1, col2, col3 = st.columns(3)
+        # Priorität, Status, Kunde und Mitarbeiter
+        col1, col2 = st.columns(2)
 
         with col1:
-            st.write(f"**Status:** {ticket.Status}")
-            st.write(f"**Priorität:** {ticket.Priorität}")
+            prioritaet = st.selectbox("Priorität", ["Hoch", "Mittel", "Niedrig"])
+
+            # Status abrufen
+            status_query = "SELECT ID_Status, Name FROM status ORDER BY ID_Status"
+            status_df = pd.read_sql(status_query, con=engine)
+            status_options = status_df["Name"].tolist()
+            ID_Statuss = status_df["ID_Status"].tolist()
+
+            status = st.selectbox("Status", status_options)
 
         with col2:
-            st.write(f"**Mitarbeiter:** {ticket.Mitarbeiter}")
-            st.write(f"**Kunde:** {ticket.Kunde}")
+            # Kunden abrufen
+            kunden_query = "SELECT ID_Kunde, Name FROM kunde ORDER BY Name"
+            kunden_df = pd.read_sql(kunden_query, con=engine)
+            kunden_options = kunden_df["Name"].tolist()
+            kunden_ids = kunden_df["ID_Kunde"].tolist()
 
-        with col3:
-            st.write(f"**Erstellt am:** {ticket.Erstellt_am}")
-            st.write(f"**Geändert am:** {ticket.Geändert_am}")
+            kunde = st.selectbox("Kunde", kunden_options)
 
-        st.markdown("---")
-        st.write("**Beschreibung:**")
-        st.write(ticket.Beschreibung)
+            # Mitarbeiter abrufen
+            mitarbeiter_query = "SELECT ID_Mitarbeiter, Name FROM mitarbeiter ORDER BY Name"
+            mitarbeiter_df = pd.read_sql(mitarbeiter_query, con=engine)
+            mitarbeiter_options = mitarbeiter_df["Name"].tolist()
+            ID_Mitarbeiters = mitarbeiter_df["ID_Mitarbeiter"].tolist()
 
-        # Kommentare abrufen
-        st.markdown("---")
-        st.subheader("Kommentare")
+            mitarbeiter = st.selectbox("Mitarbeiter", mitarbeiter_options)
 
-        kommentar_query = """
-        SELECT k.ID_Kommentar, k.Kommentar_Text AS Kommentar, m.Name as Mitarbeiter, k.Erstellt_am
-        FROM ticket_kommentar k
-        JOIN mitarbeiter m ON k.ID_Mitarbeiter = m.ID_Mitarbeiter
-        WHERE k.ID_Ticket = :ID_Ticket
-        ORDER BY k.Erstellt_am DESC
-        """
+        # Submit-Button
+        submit = st.form_submit_button("Ticket erstellen")
 
-        try:
-            with engine.connect() as conn:
-                result = conn.execute(text(kommentar_query), {"ID_Ticket": ticket_id})
-                kommentare = result.fetchall()
-        except Exception as e:
-            st.error(f"Fehler beim Abrufen der Kommentare: {str(e)}")
-            kommentare = []
-
-        if not kommentare:
-            st.info("Keine Kommentare vorhanden.")
+    if submit:
+        if not titel or not beschreibung:
+            st.error("Bitte füllen Sie alle Pflichtfelder aus.")
         else:
-            for kommentar in kommentare:
-                st.markdown(f"""
-                **{kommentar.Mitarbeiter}** - {kommentar.Erstellt_am}
-                
-                {kommentar.Kommentar}
-                
-                ---
-                """)
+            # IDs ermitteln
+            ID_Status = ID_Statuss[status_options.index(status)]
+            ID_Kunde = kunden_ids[kunden_options.index(kunde)]
+            ID_Mitarbeiter = ID_Mitarbeiters[mitarbeiter_options.index(mitarbeiter)]
 
-        # Neuen Kommentar hinzufügen
-        st.subheader("Neuer Kommentar")
+            # Ticket erstellen
+            try:
+                with engine.begin() as conn:
+                    insert_query = text("""
+                    INSERT INTO ticket (Titel, Beschreibung, Priorität, ID_Status, ID_Kunde, ID_Mitarbeiter, Erstellt_am, Geändert_am)
+                    VALUES (:titel, :beschreibung, :prioritaet, :ID_Status, :ID_Kunde, :ID_Mitarbeiter, NOW(), NOW())
+                    """)
+                    result = conn.execute(insert_query, {
+                        "titel": titel,
+                        "beschreibung": beschreibung,
+                        "prioritaet": prioritaet,
+                        "ID_Status": ID_Status,
+                        "ID_Kunde": ID_Kunde,
+                        "ID_Mitarbeiter": ID_Mitarbeiter
+                    })
 
-        with st.form(f"new_comment_form_{ticket_id}"):
-            comment_text = st.text_area("Kommentar")
-            submit_comment = st.form_submit_button("Kommentar hinzufügen")
+                    # Ticket-ID abrufen
+                    ticket_id = result.lastrowid
 
-        if submit_comment:
-            if not comment_text:
-                st.error("Bitte geben Sie einen Kommentar ein.")
-            else:
-                try:
-                    with engine.begin() as conn:
-                        insert_query = text("""
-                        INSERT INTO ticket_kommentar (ID_Ticket, ID_Mitarbeiter, Kommentar_Text, Erstellt_am)
-                        VALUES (:ID_Ticket, :ID_Mitarbeiter, :Kommentar_Text, NOW())
-                        """)
-                        conn.execute(insert_query, {
-                            "ID_Ticket": ticket_id,
-                            "ID_Mitarbeiter": st.session_state.user_id,
-                            "Kommentar_Text": comment_text
-                        })
+                    # Automatische Einträge in ticket_mitarbeiter und ticket_kategorie
+                    create_ticket_relations(ticket_id, ID_Mitarbeiter)
 
-                    st.success("Kommentar erfolgreich hinzugefügt!")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Fehler beim Hinzufügen des Kommentars: {str(e)}")
+                st.success(f"Ticket #{ticket_id} erfolgreich erstellt!")
+            except Exception as e:
+                st.error(f"Fehler beim Erstellen des Tickets: {str(e)}")
 
-        # --- Ticket-Historie anzeigen ---
-        st.markdown("---")
-        st.subheader("🕘 Änderungshistorie")
-
-        try:
-            historie_query = """
-            SELECT th.Feldname, th.Alter_Wert, th.Neuer_Wert, m.Name AS Geändert_von, th.Geändert_am
-            FROM ticket_historie th
-            LEFT JOIN mitarbeiter m ON th.Geändert_von = m.ID_Mitarbeiter
-            WHERE th.ID_Ticket = :ticket_id
-            ORDER BY th.Geändert_am DESC
-            """
-            with engine.connect() as conn:
-                result = conn.execute(text(historie_query), {"ticket_id": ticket_id})
-                history_entries = result.fetchall()
-        except Exception as e:
-            st.error(f"Fehler beim Abrufen der Historie: {str(e)}")
-            history_entries = []
-
-        if not history_entries:
-            st.info("Keine Änderungen protokolliert.")
-        else:
-            for eintrag in history_entries:
-                st.markdown(f"""
-                🔹 **{eintrag.Feldname}** geändert von **{eintrag.Alter_Wert}** zu **{eintrag.Neuer_Wert}**  
-                🧑‍💼 Durch: *{eintrag.Geändert_von}* am *{eintrag.Geändert_am}*
-                """)
-
-# Ticket-Statistiken anzeigen
 def show_ticket_statistics():
+    """UI for displaying ticket statistics."""
     from Main import engine
     st.subheader("📊 Ticket-Statistiken")
 
@@ -812,91 +818,12 @@ def show_ticket_statistics():
     except Exception as e:
         st.error(f"Fehler beim Abrufen der Statistiken: {str(e)}")
 
-# Neues Ticket-Formular anzeigen
-def show_new_ticket_form():
-    from Ticket import create_ticket_relations
-    from Main import engine
-    st.subheader("➕ Neues Ticket erstellen")
+    # The original logic from your file can be placed here.
+    st.info("Die Ticket-Statistiken werden hier angezeigt.")
 
-    # Formular zum Erstellen eines neuen Tickets
-    with st.form("new_ticket_form"):
-        # Titel und Beschreibung
-        titel = st.text_input("Titel")
-        beschreibung = st.text_area("Beschreibung")
-
-        # Priorität, Status, Kunde und Mitarbeiter
-        col1, col2 = st.columns(2)
-
-        with col1:
-            prioritaet = st.selectbox("Priorität", ["Hoch", "Mittel", "Niedrig"])
-
-            # Status abrufen
-            status_query = "SELECT ID_Status, Name FROM status ORDER BY ID_Status"
-            status_df = pd.read_sql(status_query, con=engine)
-            status_options = status_df["Name"].tolist()
-            ID_Statuss = status_df["ID_Status"].tolist()
-
-            status = st.selectbox("Status", status_options)
-
-        with col2:
-            # Kunden abrufen
-            kunden_query = "SELECT ID_Kunde, Name FROM kunde ORDER BY Name"
-            kunden_df = pd.read_sql(kunden_query, con=engine)
-            kunden_options = kunden_df["Name"].tolist()
-            kunden_ids = kunden_df["ID_Kunde"].tolist()
-
-            kunde = st.selectbox("Kunde", kunden_options)
-
-            # Mitarbeiter abrufen
-            mitarbeiter_query = "SELECT ID_Mitarbeiter, Name FROM mitarbeiter ORDER BY Name"
-            mitarbeiter_df = pd.read_sql(mitarbeiter_query, con=engine)
-            mitarbeiter_options = mitarbeiter_df["Name"].tolist()
-            ID_Mitarbeiters = mitarbeiter_df["ID_Mitarbeiter"].tolist()
-
-            mitarbeiter = st.selectbox("Mitarbeiter", mitarbeiter_options)
-
-        # Submit-Button
-        submit = st.form_submit_button("Ticket erstellen")
-
-    if submit:
-        if not titel or not beschreibung:
-            st.error("Bitte füllen Sie alle Pflichtfelder aus.")
-        else:
-            # IDs ermitteln
-            ID_Status = ID_Statuss[status_options.index(status)]
-            ID_Kunde = kunden_ids[kunden_options.index(kunde)]
-            ID_Mitarbeiter = ID_Mitarbeiters[mitarbeiter_options.index(mitarbeiter)]
-
-            # Ticket erstellen
-            try:
-                with engine.begin() as conn:
-                    insert_query = text("""
-                    INSERT INTO ticket (Titel, Beschreibung, Priorität, ID_Status, ID_Kunde, ID_Mitarbeiter, Erstellt_am, Geändert_am)
-                    VALUES (:titel, :beschreibung, :prioritaet, :ID_Status, :ID_Kunde, :ID_Mitarbeiter, NOW(), NOW())
-                    """)
-                    result = conn.execute(insert_query, {
-                        "titel": titel,
-                        "beschreibung": beschreibung,
-                        "prioritaet": prioritaet,
-                        "ID_Status": ID_Status,
-                        "ID_Kunde": ID_Kunde,
-                        "ID_Mitarbeiter": ID_Mitarbeiter
-                    })
-
-                    # Ticket-ID abrufen
-                    ticket_id = result.lastrowid
-
-                    # Automatische Einträge in ticket_mitarbeiter und ticket_kategorie
-                    create_ticket_relations(ticket_id, ID_Mitarbeiter)
-
-                st.success(f"Ticket #{ticket_id} erfolgreich erstellt!")
-            except Exception as e:
-                st.error(f"Fehler beim Erstellen des Tickets: {str(e)}")
-
-# Einstellungen anzeigen
 def show_settings():
+    """UI for managing app settings."""
     from Main import engine
-
     # Zugriffsschutz für Nicht-Admins
     if st.session_state.get("user_role") != "admin":
         st.error("🚫 Zugriff verweigert – nur für Administratoren.")
@@ -1067,9 +994,10 @@ def show_settings():
                         st.error(f"Fehler beim Hinzufügen des Status: {str(e)}")
 
 def show_kanban_board():
+    """UI for the Kanban board view."""
     from Main import engine
     st.subheader("📌 Kanban-Board")
-
+    # The original logic from your file can be placed here.
     # Status laden
     status_df = pd.read_sql("SELECT ID_Status, Name FROM status ORDER BY ID_Status", con=engine)
     status_list = status_df.to_dict('records')
@@ -1137,4 +1065,41 @@ def show_kanban_board():
 
                 st.markdown("---")
 
+def show_email_integration():
+    """UI for email functionality."""
+    st.subheader("📧 E-Mail")
+    email_mode = st.radio("E-Mail-Funktion wählen:", ["📧 E-Mail senden", "📥 E-Mail empfangen"])
+    if email_mode == "📧 E-Mail senden":
+        show_email_tab()
+    else:
+        show_email_inbox_tab()
+
+# ==============================================================================
+# 4. MAIN APPLICATION CONTROLLER
+# ==============================================================================
+
+def show_ticket_system():
+    """
+    The main function that sets up the UI tabs and calls the respective
+    functions to render the content. This function no longer takes 'engine'.
+    """
+    st.title("🎫 Ticketsystem")
+
+    tab_definitions = {
+        "📋 Ticketübersicht": show_ticket_overview,
+        "📌 Kanban-Board": show_kanban_board,
+        "✏️ Ticket bearbeiten": show_ticket_edit_tab,
+        "➕ Neues Ticket": show_new_ticket_form,
+        "📊 Statistiken": show_ticket_statistics,
+        "⚙️ Einstellungen": show_settings,
+        "📧 EMAIL": show_email_integration
+    }
+
+    tab_names = list(tab_definitions.keys())
+    tabs = st.tabs(tab_names)
+
+    for i, tab_name in enumerate(tab_names):
+        with tabs[i]:
+            # Call the function associated with the tab
+            tab_definitions[tab_name]()
 

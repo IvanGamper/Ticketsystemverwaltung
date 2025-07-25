@@ -27,7 +27,9 @@ def export_to_excel(df):
         df.to_excel(writer, index=False)
     return output.getvalue()
 
-# PDF-Exportfunktion
+from fpdf import FPDF
+from io import BytesIO
+
 def export_to_pdf(df):
     pdf = FPDF()
     pdf.add_page()
@@ -41,14 +43,20 @@ def export_to_pdf(df):
         pdf.cell(col_width, row_height, txt=str(col), border=1)
     pdf.ln(row_height)
 
-    # Datenzeilen
-    for i in range(len(df)):
-        for item in df.iloc[i]:
+    # Data rows
+    for _, row in df.iterrows():
+        for item in row:
             pdf.cell(col_width, row_height, txt=str(item), border=1)
         pdf.ln(row_height)
 
-    pdf_bytes = pdf.output(dest='S').encode('latin1')  # latin1 = PDF-kompatibles Encoding
-    return pdf_bytes
+    # Robust gegen alte/neue fpdf-Versionen
+    output = pdf.output(dest="S")
+    if isinstance(output, (bytes, bytearray)):
+        return bytes(output)  # garantiert Bytes-Typ
+    else:
+        return output.encode("latin1")
+
+
 
 def export_section(engine):
     st.subheader("📤 Daten exportieren")
